@@ -1,55 +1,115 @@
+import requests
+from bs4 import BeautifulSoup
 import json
-from citeproc import CitationStylesStyle, CitationStylesBibliography
-from citeproc import Citation, CitationItem
-from citeproc import formatter
-from citeproc.source.json import CiteProcJSON
-from flask_cors import CORS
-from flask import Flask, request, jsonify
-app = Flask(__name__)
-CORS(app)
-@app.route('/script', methods=['POST'])
+import datetime
 
-def lambda_handler():
-    p = request.json
-    new_json = {
-        "id": "ITEM",
-        "type": "webpage",
-        "title": p["title"],
-        "container-title": p["website_title"],
-        "author": [
-            {
-            "family": p["author"][2],
-            "given": p["author"][0]
-            }
-        ],
-        "issued": {
-            "date-parts": [
-                p["date_published"]
-            ]
-        },
-        "URL": p["url"],
-        "accessed": {
-            "date-parts": [
-                p["date_accessed"]
-            ]
-        }
-    }
-    json_input = json.dumps(new_json)
-
-    json_data = [json.loads(json_input)]
-    bib_source = CiteProcJSON(json_data)
-    bib_style = CitationStylesStyle('modern-language-association.csl', validate=False)
-    bibliography = CitationStylesBibliography(bib_style, bib_source, formatter.html)
-    citation1 = Citation([CitationItem('ITEM')])
-    bibliography.register(citation1)
+def find_title(schema_data):
     rv = ''
-    for item in bibliography.bibliography():
-        rv = rv+ (str(item))
-    print(rv)
+    if 'headline' in schema_data:
+        rv = schema_data['headline']
+    return rv
+
+def find_author(schema_data):
+    rv = ''
+    schema_data = schema_data
+    if 'author' in schema_data:
+        author = schema_data['author']
+        if 'name' in author:
+            rv = author['name']
+        else:
+            rv = author[0]['name']
+        rv = rv.split(' ')
+        if len(rv) == 2:
+            rv.insert(1, '')
+        while (len(rv) < 4):
+            rv.append('')
+    return rv
+
+def find_website_title(schema_data):
+    rv = ''
+    if 'publisher' in schema_data:
+        publisher = schema_data['publisher']
+        if 'name' in publisher:
+            rv = publisher['name']
+    return rv
+
+def find_date_published(schema_data):
+    rv = ''
+    if 'datePublished' in schema_data:
+        rv = schema_data['datePublished']
+        rv = rv[0:rv.index('T')]
+        rv = rv.split('-')
+        for i in range(len(rv)):
+            rv[i] = int(rv[i])
+    return rv
+
+def find_date_accessed():
+    today = datetime.date.today()
+    rv = [today.year, today.month, today.day]
+    return rv
+
+
+def lambda_handler(event, context):
+    url = event['queryStringParameters']['url']
+
+    url = url.replace("%3A", ":")
+    url = url.replace("%2F", "/")
+
+    headers = {
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/75.0.3770.142 Safari/537.36'
+    }
+
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+
+    schema_tags = soup.find_all('script', {'type': 'application/ld+json'})
+
+    title = ''
+    author = ['']
+    website_title = ''
+    date_published = ''
+    date_accessed = find_date_accessed()
+
+    for tag in schema_tags:
+        tagStr = tag.string.strip()
+        while not tagStr[-1] == '}':
+            tagStr = tagStr[:-1]
+        schema_data = json.loads(tagStr)
+        title_check = find_title(schema_data)
+        if not title_check == '':
+            title = title_check
+        author_check = find_author(schema_data)
+        if not author_check == '':
+            author = author_check
+        website_title_check = find_website_title(schema_data)
+        if not website_title_check == '':
+            website_title = website_title_check
+        date_published_check = find_date_published(schema_data)
+        if not date_published_check == '':
+            date_published = date_published_check
+
+    if ' '.join(author) == website_title:
+        author.clear()
+
+    data = {
+        'url': url,
+        'title' : title,
+        'author' : author,
+        'publisher' : ['','','',''],
+        'website_title' : website_title,
+        'date_published' : date_published,
+        'date_accessed' : date_accessed
+    }
+
     return {
         'statusCode': 200,
-        'body': json.dumps(rv)
+        'headers': {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Methods": "OPTIONS,POST,GET",
+            "Access-Control-Allow-Credentials": True
+        },
+        'body': json.dumps(data)
     }
-
-if __name__ == '__main__':
-    app.run(port=5000)
